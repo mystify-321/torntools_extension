@@ -448,6 +448,7 @@ export function formatNumber(number: number | string, partialOptions: Partial<Fo
 						thousand: "k",
 						million: "mil",
 						billion: "bill",
+						trillion: "tril",
 					};
 				case 2:
 				case 3:
@@ -455,12 +456,16 @@ export function formatNumber(number: number | string, partialOptions: Partial<Fo
 						thousand: "k",
 						million: "m",
 						billion: "b",
+						trillion: "t",
 					};
 			}
 		})();
 
 		if (version === 1 || version === 2) {
-			if (abstract >= 1e9) {
+			if (abstract >= 1e12) {
+				if (abstract % 1e12 === 0) text = (abstract / 1e12).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",") + words.trillion;
+				else text = (abstract / 1e12).toFixed(3) + words.trillion;
+			} else if (abstract >= 1e9) {
 				if (abstract % 1e9 === 0) text = (abstract / 1e9).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",") + words.billion;
 				else text = (abstract / 1e9).toFixed(3) + words.billion;
 			} else if (abstract >= 1e6) {
@@ -470,7 +475,10 @@ export function formatNumber(number: number | string, partialOptions: Partial<Fo
 				if (abstract % 1e3 === 0) text = abstract / 1e3 + words.thousand;
 			}
 		} else {
-			if (abstract >= 1e9) {
+			if (abstract >= 1e12) {
+				if (abstract % 1e12 === 0) text = abstract / 1e12 + words.trillion;
+				else text = parseFloat((abstract / 1e12).toFixed(decimals)) + words.trillion;
+			} else if (abstract >= 1e9) {
 				if (abstract % 1e9 === 0) text = abstract / 1e9 + words.billion;
 				else text = parseFloat((abstract / 1e9).toFixed(decimals)) + words.billion;
 			} else if (abstract >= 1e6) {
