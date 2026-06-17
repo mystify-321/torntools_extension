@@ -25,6 +25,9 @@ export class DefaultSetting<T = never> {
 	}
 }
 
+export const NETWORTH_FILTER_MAX = 100_000_000_000_000; // $100 trillion. Slider end at this value is treated as "no upper limit".
+export const LAST_ACTION_FILTER_MAX = 60 * 60 * 24 * 365 * 3; // 3 years, in seconds. Slider end at this value is treated as "no upper limit".
+
 export const DEFAULT_STORAGE = {
 	version: {
 		current: new DefaultSetting<string>("string", () => RUNTIME_INFORMATION.getVersion()),
@@ -594,6 +597,10 @@ export const DEFAULT_STORAGE = {
 			estimates: new DefaultSetting<string[]>("array", []),
 			ffScoreMax: new DefaultSetting("number", null),
 			ffScoreMin: new DefaultSetting("number", null),
+			networthStart: new DefaultSetting("number", 0),
+			networthEnd: new DefaultSetting("number", NETWORTH_FILTER_MAX),
+			lastActionStart: new DefaultSetting("number", 0),
+			lastActionEnd: new DefaultSetting("number", LAST_ACTION_FILTER_MAX),
 		},
 		abroadItems: {
 			enabled: new DefaultSetting("boolean", true),

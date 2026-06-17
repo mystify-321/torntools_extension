@@ -3,6 +3,7 @@ import { userdata } from "@common/utils/data/database";
 import type { WeaponBonusFilter } from "@common/utils/data/default-database";
 import { createCheckbox } from "@common/utils/elements/checkbox/checkbox";
 import { createCheckboxList } from "@common/utils/elements/checkbox-list/checkbox-list";
+import { LogRangeSlider } from "@common/utils/elements/log-range-slider/log-range-slider";
 import { createMultiSelect, createSelect, type SelectOption } from "@common/utils/elements/select/select";
 import { DualRangeSlider } from "@common/utils/elements/slider/slider";
 import { createTextbox, type TextboxWithoutDescriptionFilter } from "@common/utils/elements/textbox/textbox";
@@ -107,6 +108,15 @@ type SliderOptions = CommonOptions & {
 		valueHigh: number;
 	};
 };
+type LogSliderOptions = CommonOptions & {
+	logSlider: {
+		min: number;
+		max: number;
+		minPositive: number;
+		valueLow: number;
+		valueHigh: number;
+	};
+};
 type TextOptions = CommonOptions & {
 	text: true | string;
 	default: string;
@@ -127,6 +137,7 @@ export function createFilterSection(options: CheckboxSectionOptions): any;
 export function createFilterSection(options: CheckboxesOptions): any;
 export function createFilterSection(options: YNCheckboxesOptions): any;
 export function createFilterSection(options: SliderOptions): any;
+export function createFilterSection(options: LogSliderOptions): any;
 export function createFilterSection(options: TextOptions): any;
 
 export function createFilterSection(
@@ -139,6 +150,7 @@ export function createFilterSection(
 		| CheckboxesOptions
 		| YNCheckboxesOptions
 		| SliderOptions
+		| LogSliderOptions
 		| TextOptions,
 ): any {
 	if ("type" in options) {
@@ -336,6 +348,33 @@ export function createFilterSection(
 		}
 	}
 
+	if (isLogSliderOptions(options)) {
+		const rangeSlider = new LogRangeSlider(options.logSlider);
+		section.appendChild(rangeSlider.slider);
+		section.appendChild(elementBuilder({ type: "div", class: "slider-counter", text: "" }));
+		section.classList.add("tt-slider");
+
+		new MutationObserver(options.callback).observe(rangeSlider.slider, { attributes: true });
+
+		return { element: section, getStartEnd, updateCounter };
+
+		function getStartEnd(content: Element) {
+			const rangeElement = content.querySelector<HTMLElement>(`.${ccTitle} .tt-log-range`);
+			if (!rangeElement) {
+				return { start: (options as LogSliderOptions).logSlider.valueLow, end: (options as LogSliderOptions).logSlider.valueHigh };
+			}
+
+			return { start: rangeElement.dataset.low, end: rangeElement.dataset.high };
+		}
+
+		function updateCounter(string: string, content: Element) {
+			const counter = content.querySelector(`.${ccTitle} .slider-counter`);
+			if (!counter) return;
+
+			counter.textContent = string;
+		}
+	}
+
 	return { element: section };
 }
 
@@ -365,6 +404,10 @@ function isSelectOptions(options: any): options is SelectOptions {
 
 function isSliderOptions(options: any): options is SliderOptions {
 	return "slider" in options;
+}
+
+function isLogSliderOptions(options: any): options is LogSliderOptions {
+	return "logSlider" in options;
 }
 
 interface WeaponBonusOptions {

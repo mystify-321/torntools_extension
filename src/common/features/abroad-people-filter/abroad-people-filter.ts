@@ -1,7 +1,10 @@
 import { ttStorage } from "@common/utils/context";
+import { ttCache } from "@common/utils/data/cache";
 import { filters, settings } from "@common/utils/data/database";
+import { LAST_ACTION_FILTER_MAX, NETWORTH_FILTER_MAX } from "@common/utils/data/default-database";
 import { createTextbox } from "@common/utils/elements/textbox/textbox";
 import { hasAPIData } from "@common/utils/functions/api";
+import { fetchData } from "@common/utils/functions/api-fetcher";
 import { createContainer, findContainer, removeContainer } from "@common/utils/functions/containers";
 import { elementBuilder, findAllElements } from "@common/utils/functions/dom";
 import {
@@ -13,14 +16,146 @@ import {
 	getSpecialIcons,
 	type SpecialFilterValue,
 } from "@common/utils/functions/filters";
-import { convertToNumber } from "@common/utils/functions/formatting";
+import { convertToNumber, formatNumber } from "@common/utils/functions/formatting";
 import { CUSTOM_LISTENERS, EVENT_CHANNELS, triggerCustomListener } from "@common/utils/functions/listeners";
 import { requireElement } from "@common/utils/functions/requires";
 import { isAbroad, RANK_TRIGGERS, SPECIAL_FILTER_ICONS } from "@common/utils/functions/torn";
+import { sleep, TO_MILLIS } from "@common/utils/functions/utilities";
 import { Feature } from "@features/feature";
 import { hasStatsEstimatesLoaded } from "@features/stats-estimate/stats-estimate";
+import type { UserPersonalStatsPopular, UserProfileResponse } from "tornapi-typescript";
 
 const localFilters: any = {};
+
+const USER_DATA_CACHE_SECTION = "abroad-filter-networth-last-action";
+const USER_DATA_FETCH_DELAY = TO_MILLIS.SECONDS * 1.5;
+const SECONDS_PER = {
+	YEAR: 60 * 60 * 24 * 365,
+	MONTH: 60 * 60 * 24 * 30,
+	DAY: 60 * 60 * 24,
+	HOUR: 60 * 60,
+	MINUTE: 60,
+} as const;
+
+interface UserNetworthLastAction {
+	networth: number;
+	lastAction: number;
+}
+
+interface UserDataQueueItem {
+	row: HTMLElement;
+	id: number;
+}
+
+let userDataQueue: UserDataQueueItem[] = [];
+let userDataRunning = false;
+
+function formatNetworthLabel(value: number): string {
+	return `${formatNumber(value, { shorten: 3, currency: true })}${value >= NETWORTH_FILTER_MAX ? "+" : ""}`;
+}
+
+function formatDurationLabel(seconds: number): string {
+	const value = Math.max(seconds, 0);
+	const suffix = value >= LAST_ACTION_FILTER_MAX ? "+" : "";
+
+	let amount: number, unit: string;
+	if (value >= SECONDS_PER.YEAR) [amount, unit] = [value / SECONDS_PER.YEAR, "y"];
+	else if (value >= SECONDS_PER.MONTH) [amount, unit] = [value / SECONDS_PER.MONTH, "mo"];
+	else if (value >= SECONDS_PER.DAY) [amount, unit] = [value / SECONDS_PER.DAY, "d"];
+	else if (value >= SECONDS_PER.HOUR) [amount, unit] = [value / SECONDS_PER.HOUR, "h"];
+	else if (value >= SECONDS_PER.MINUTE) [amount, unit] = [value / SECONDS_PER.MINUTE, "m"];
+	else return `${Math.round(value)}s${suffix}`;
+
+	return `${Math.round(amount * 10) / 10}${unit}${suffix}`;
+}
+
+function loadUserData() {
+	const rows = findAllElements(".users-list > li").filter(
+		(row) => !(row.classList.contains("tt-hidden") && row.dataset.hideReason !== "networth" && row.dataset.hideReason !== "last-action"),
+	);
+
+	for (const row of rows) {
+		const link = row.querySelector<HTMLAnchorElement>(".user.name[href*='profiles.php']");
+		if (!link) continue;
+
+		const id = parseInt(link.href.match(/(?<=XID=).*/)[0]);
+		if (Number.isNaN(id)) continue;
+
+		userDataQueue.push({ row, id });
+	}
+
+	return runUserDataQueue();
+}
+
+async function runUserDataQueue() {
+	if (userDataRunning) return;
+
+	userDataRunning = true;
+
+	while (userDataQueue.length) {
+		const { row, id } = userDataQueue.shift();
+
+		if (row.classList.contains("tt-hidden") && row.dataset.hideReason !== "networth" && row.dataset.hideReason !== "last-action") continue;
+
+		try {
+			const { networth, lastAction } = await fetchUserData(id);
+
+			row.dataset.networth = networth.toString();
+			row.dataset.lastAction = lastAction.toString();
+
+			applyUserData(row);
+		} catch (error) {
+			console.error("TT - Failed to load networth/last action data.", error);
+		}
+
+		await sleep(USER_DATA_FETCH_DELAY);
+	}
+
+	userDataRunning = false;
+}
+
+async function fetchUserData(id: number): Promise<UserNetworthLastAction> {
+	if (ttCache.hasValue(USER_DATA_CACHE_SECTION, id)) {
+		return ttCache.get<UserNetworthLastAction>(USER_DATA_CACHE_SECTION, id);
+	}
+
+	const data = await fetchData<UserProfileResponse & UserPersonalStatsPopular>("tornv2", {
+		section: "user",
+		id,
+		selections: ["profile", "personalstats"],
+		params: { cat: "popular" },
+		silent: true,
+	});
+
+	const result: UserNetworthLastAction = {
+		networth: data.personalstats.networth.total,
+		lastAction: data.profile.last_action.timestamp,
+	};
+
+	ttCache
+		.set({ [id]: result }, TO_MILLIS.HOURS, USER_DATA_CACHE_SECTION)
+		.catch((error) => console.error("TT - Failed to cache networth/last action data.", error));
+
+	return result;
+}
+
+function applyUserData(row: HTMLElement) {
+	if (!localFilters.enabled?.isEnabled()) return;
+	if (row.classList.contains("tt-hidden") && row.dataset.hideReason !== "networth" && row.dataset.hideReason !== "last-action") return;
+
+	const content = findContainer("People Filter", { selector: "main" });
+	const networthRange = localFilters["Networth Filter"]?.getStartEnd(content);
+	const lastActionRange = localFilters["Last Action Filter"]?.getStartEnd(content);
+
+	filterRow(
+		row,
+		{
+			networth: networthRange ? { start: parseFloat(networthRange.start), end: parseFloat(networthRange.end) } : undefined,
+			lastAction: lastActionRange ? { start: parseFloat(lastActionRange.start), end: parseFloat(lastActionRange.end) } : undefined,
+		},
+		true,
+	);
+}
 
 function initialiseFilters() {
 	CUSTOM_LISTENERS[EVENT_CHANNELS.STATS_ESTIMATED].push(({ row }) => {
@@ -115,6 +250,40 @@ async function addFilters() {
 	content.appendChild(filterContent);
 	localFilters["Level Filter"] = { getStartEnd: levelFilter.getStartEnd, updateCounter: levelFilter.updateCounter };
 
+	if (hasAPIData()) {
+		const networthFilter = createFilterSection({
+			title: "Networth",
+			noTitle: true,
+			logSlider: {
+				min: 0,
+				max: NETWORTH_FILTER_MAX,
+				minPositive: 1,
+				valueLow: filters.abroadPeople.networthStart,
+				valueHigh: filters.abroadPeople.networthEnd,
+			},
+			callback: () => applyFilters(),
+		});
+		filterContent.appendChild(networthFilter.element);
+		localFilters["Networth Filter"] = { getStartEnd: networthFilter.getStartEnd, updateCounter: networthFilter.updateCounter };
+
+		const lastActionFilter = createFilterSection({
+			title: "Last Action",
+			noTitle: true,
+			logSlider: {
+				min: 0,
+				max: LAST_ACTION_FILTER_MAX,
+				minPositive: 1,
+				valueLow: filters.abroadPeople.lastActionStart,
+				valueHigh: filters.abroadPeople.lastActionEnd,
+			},
+			callback: () => applyFilters(),
+		});
+		filterContent.appendChild(lastActionFilter.element);
+		localFilters["Last Action Filter"] = { getStartEnd: lastActionFilter.getStartEnd, updateCounter: lastActionFilter.updateCounter };
+
+		loadUserData().catch((error) => console.error("TT - Failed to load networth/last action data.", error));
+	}
+
 	if (settings.scripts.statsEstimate.global && settings.scripts.statsEstimate.userlist && hasAPIData()) {
 		const estimatesFilter = createFilterSection({
 			title: "Stats Estimates",
@@ -183,8 +352,18 @@ async function applyFilters() {
 	const ffScoreMin = parseFloat(localFilters["FF Score Min"]?.getValue()) ?? null;
 	const ffScoreMax = parseFloat(localFilters["FF Score Max"]?.getValue()) ?? null;
 
-	// Update level slider counter
+	const networthRange = localFilters["Networth Filter"]?.getStartEnd(content);
+	const networthStart = networthRange ? parseFloat(networthRange.start) : filters.abroadPeople.networthStart;
+	const networthEnd = networthRange ? parseFloat(networthRange.end) : filters.abroadPeople.networthEnd;
+
+	const lastActionRange = localFilters["Last Action Filter"]?.getStartEnd(content);
+	const lastActionStart = lastActionRange ? parseFloat(lastActionRange.start) : filters.abroadPeople.lastActionStart;
+	const lastActionEnd = lastActionRange ? parseFloat(lastActionRange.end) : filters.abroadPeople.lastActionEnd;
+
+	// Update slider counters
 	localFilters["Level Filter"].updateCounter(`Level ${levelStart} - ${levelEnd}`, content);
+	localFilters["Networth Filter"]?.updateCounter(`Networth: ${formatNetworthLabel(networthStart)} - ${formatNetworthLabel(networthEnd)}`, content);
+	localFilters["Last Action Filter"]?.updateCounter(`Last Action: ${formatDurationLabel(lastActionStart)} - ${formatDurationLabel(lastActionEnd)}`, content);
 
 	// Save filters
 	await ttStorage.change({
@@ -200,6 +379,10 @@ async function applyFilters() {
 				estimates: statsEstimates ?? filters.abroadPeople.estimates,
 				ffScoreMax,
 				ffScoreMin,
+				networthStart,
+				networthEnd,
+				lastActionStart,
+				lastActionEnd,
 			},
 		},
 	});
@@ -219,7 +402,22 @@ async function applyFilters() {
 	}
 
 	for (const row of findAllElements(".users-list > li")) {
-		filterRow(row, { activity, faction, special, status, level: { start: levelStart, end: levelEnd }, statsEstimates, ffScoreMin, ffScoreMax }, false);
+		filterRow(
+			row,
+			{
+				activity,
+				faction,
+				special,
+				status,
+				level: { start: levelStart, end: levelEnd },
+				statsEstimates,
+				ffScoreMin,
+				ffScoreMax,
+				networth: { start: networthStart, end: networthEnd },
+				lastAction: { start: lastActionStart, end: lastActionEnd },
+			},
+			false,
+		);
 	}
 
 	triggerCustomListener(EVENT_CHANNELS.FILTER_APPLIED, { filter: "People Filter" });
@@ -250,6 +448,14 @@ type AbroadPeopleFilters = {
 	statsEstimates: string[];
 	ffScoreMax: number;
 	ffScoreMin: number;
+	networth: {
+		start: number;
+		end: number;
+	};
+	lastAction: {
+		start: number;
+		end: number;
+	};
 };
 
 function filterRow(row: HTMLElement, filters: Partial<AbroadPeopleFilters>, individual: boolean) {
@@ -343,6 +549,31 @@ function filterRow(row: HTMLElement, filters: Partial<AbroadPeopleFilters>, indi
 			}
 		}
 	}
+	if (filters.networth && (filters.networth.start > 0 || filters.networth.end < NETWORTH_FILTER_MAX)) {
+		const networth = row.dataset.networth !== undefined ? parseFloat(row.dataset.networth) : undefined;
+
+		if (
+			networth === undefined ||
+			(filters.networth.start > 0 && networth < filters.networth.start) ||
+			(filters.networth.end < NETWORTH_FILTER_MAX && networth > filters.networth.end)
+		) {
+			hide("networth");
+			return;
+		}
+	}
+	if (filters.lastAction && (filters.lastAction.start > 0 || filters.lastAction.end < LAST_ACTION_FILTER_MAX)) {
+		const lastActionTimestamp = row.dataset.lastAction !== undefined ? parseFloat(row.dataset.lastAction) : undefined;
+		const elapsed = lastActionTimestamp !== undefined ? Date.now() / 1000 - lastActionTimestamp : undefined;
+
+		if (
+			elapsed === undefined ||
+			(filters.lastAction.start > 0 && elapsed < filters.lastAction.start) ||
+			(filters.lastAction.end < LAST_ACTION_FILTER_MAX && elapsed > filters.lastAction.end)
+		) {
+			hide("last-action");
+			return;
+		}
+	}
 	if (filters.ffScoreMax || filters.ffScoreMin) {
 		try {
 			const gauge = row.querySelector(".tt-ff-scouter-indicator.indicator-lines");
@@ -427,6 +658,9 @@ function getFactions() {
 function removeFilters() {
 	removeContainer("People Filter");
 	findAllElements(".users-list > li.tt-hidden").forEach((x) => x.classList.remove("tt-hidden"));
+
+	userDataQueue = [];
+	userDataRunning = false;
 }
 
 export default class AbroadPeopleFilterFeature extends Feature {
